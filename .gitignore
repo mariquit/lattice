@@ -1,0 +1,38 @@
+# Cargo build artifacts
+target/
+Cargo.lock
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# OS-specific
+Thumbs.db
+
+# Rust/Cargo
+*.pdb
+.rls/
+.rust-analyzer/
+
+# Development
+.env
+.env.local
+.env.*.local
+
+# Project-specific
+.tokensave
+
+.lattice/
+.substrate/
+reference.archify/
+reference.cvg/

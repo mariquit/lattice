@@ -1,0 +1,77 @@
+[package]
+name = "lattice"
+version = "0.1.0"
+edition = "2021"
+description = "Knowledge memory CLI for brownfield codebases: graph + vector + OKF context store"
+license = "Apache-2.0"
+publish = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+incremental = false
+
+[lib]
+name = "lattice"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lattice"
+path = "src/main.rs"
+
+[dependencies]
+sparrowdb = "0.1.16"
+sparrowdb-execution = "0.1.16"
+tree-sitter = "0.22"
+tree-sitter-rust = "0.21"
+tree-sitter-python = "0.21"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tree-sitter-typescript = "0.21"
+# Kotlin grammar compiled into the binary. 0.3.8 is the last release that
+# links tree-sitter >=0.21, <0.23 — the same pin as the other grammars.
+tree-sitter-kotlin = "0.3.8"
+# ignore: ripgrep's pure-Rust directory walker. Honors .gitignore / .ignore /
+# global gitignore / .git/info/exclude and skips hidden entries — no C++
+# toolchain. This is what makes `lattice init` respect .gitignore (bug #1).
+ignore = "0.4"
+
+# ── slice 9 (sqlite-vec-plus-candle) ────────────────────────────────────────
+# sqlite-vec: vec0 virtual table; a single C file compiled via `cc` (same
+# class as rusqlite's bundled SQLite — no cmake/libclang/C++).
+sqlite-vec = "0.1.9"
+# candle: pure-Rust CPU BERT inference for the all-MiniLM-L6-v2 embedder.
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+# HF tokenizers with default-features disabled: drops the C `onig` regex and
+# the C++ `esaxx_fast` builders. `fancy-regex` restores the pure-Rust regex
+# backend the WordPiece tokenizer needs.
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+# hf-hub: install-time-only weight fetch. `ureq` feature => ureq 3 (rustls,
+# no reqwest/tokio/native-tls). Model downloads happen only in `lattice install`.
+hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
+
+# gix: pure-Rust git library (no libgit2/C++). Features: open repo, revision
+# walk, and blob-diff for line-count accumulation (imara-diff backed).
+# default-features = true ships no network client; zero egress guaranteed.
+# TODO trim gix features once the build is stable.
+gix = { version = "0.70", default-features = false, features = ["blob-diff", "revision"] }
+imara-diff = "0.1.8"
+
+# indicatif: the `lattice init` progress footer. Pure Rust (console + libc,
+# no C++ toolchain) and ALREADY in the dependency graph transitively via
+# hf-hub's `ureq` feature, so declaring it directly adds no new build cost.
+# Progress is stderr-only and off unless stderr is a tty — see src/progress.rs.
+indicatif = "0.18"
+# toml: parse optional `.lattice/languages.toml`. Pure Rust, no C toolchain.
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

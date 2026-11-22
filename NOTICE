@@ -1,0 +1,28 @@
+# Lattice Notices
+
+Lattice was originally created by John Anthony Mariquit.
+Copyright (c) 2026 John Anthony Mariquit.
+
+## Prior Art
+
+Lattice's reciprocal rank fusion implementation credits the `rrfMerge`
+pattern in the `tencentdb` reference project. Feature research
+also drew on code-review-graph, open-codebase-index, and archify. These
+references identify design provenance; they do not replace any copyright or
+license notices that apply to third-party material.
+
+## Community Documents
+
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) is adapted from [Contributor Covenant
+2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/), licensed
+under [Creative Commons Attribution 4.0 International](https://github.com/EthicalSource/contributor_covenant/blob/2.1/LICENSE.md).
+The reporting and moderation instructions are adapted for Lattice. The
+Contributor Covenant credits Mozilla's code of conduct enforcement ladder as
+inspiration for its Community Impact Guidelines.
+
+## Dependencies and Models
+
+Dependencies and separately downloaded model files retain their own license
+terms. Preserve their applicable licenses and notices when redistributing them.
+The `install` command downloads the `sentence-transformers/all-MiniLM-L6-v2`
+model separately from the Lattice binary.

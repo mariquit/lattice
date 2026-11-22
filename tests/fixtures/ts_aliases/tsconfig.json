@@ -1,0 +1,10 @@
+{
+  // tsconfig for ts_aliases fixture
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@core": ["src/core"],
+      "@core/*": ["src/core/*"]
+    }
+  }
+}

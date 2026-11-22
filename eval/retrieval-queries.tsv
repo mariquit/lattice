@@ -1,0 +1,25 @@
+# category<TAB>query<TAB>relevant path::symbol (multiple labels separated by |)
+identifier	ensure_fresh	src/freshness.rs::ensure_fresh
+identifier	resolve_model_dir	src/embed.rs::resolve_model_dir
+identifier	transitive_callers_min	src/graph.rs::transitive_callers_min
+identifier	parse_sections	src/markdown.rs::parse_sections
+identifier	diff_communities	src/snapshot.rs::diff_communities
+identifier	remove_legacy_block	src/install.rs::remove_legacy_block
+paraphrase	resume unfinished embedding after a killed index run	src/freshness.rs::ensure_fresh|src/vectors.rs::has_pending
+paraphrase	where do we look for model weights on disk	src/embed.rs::resolve_model_dir
+paraphrase	what code walks all upstream functions affected by a change	src/graph.rs::transitive_callers_min
+paraphrase	break documentation into chunks based on headings	src/markdown.rs::parse_sections
+paraphrase	find bottlenecks on the greatest number of shortest paths	src/centrality.rs::bridges
+paraphrase	search for functions that resemble one I already know	src/vectors.rs::similar|src/router.rs::dispatch_similar
+paraphrase	merge keyword and semantic results without comparing raw scores	src/fuse.rs::rrf|src/router.rs::dispatch_hybrid
+paraphrase	remove old generated agent guidance without touching surrounding text	src/install.rs::remove_legacy_block
+paraphrase	refuse to overwrite a user-authored OpenCode skill	src/install.rs::install_skill
+paraphrase	find sets of closely connected symbols in the call graph	src/leiden.rs::detect
+distinction	find functions that call this symbol rather than functions it calls	src/graph.rs::callers_min|src/router.rs::dispatch_callers
+distinction	find functions this symbol calls rather than its callers	src/graph.rs::callees_min|src/router.rs::dispatch_callees
+distinction	compare two saved code graphs instead of reviewing a git commit	src/router.rs::dispatch_graph_diff|src/snapshot.rs::diff
+distinction	count tokens without loading model weights	src/embed.rs::count_tokens
+distinction	read the currently checked out branch without switching branches	src/branch.rs::active_branch
+distinction	find the original heading span for a split documentation section	src/markdown.rs::parent_span
+distinction	dispatch explicit symbol search separately from default hybrid search	src/router.rs::route_value
+distinction	look up call expression line numbers rather than the callee declaration	src/graph.rs::read_call_sites|src/router.rs::dispatch_context
