@@ -67,6 +67,8 @@ The OpenCode skill uses these same commands. `lattice install` does not create a
 
 For retrieval, use `--limit` to cap results and `--exclude-tests` to filter test and fixture hits where supported. Only `--symbol` accepts branch overrides: `--branch <name>` and `--all-branches` use a local catalog of previously indexed branches. They do not fetch remote data. `--hints` adds suggested CLI command templates to query results.
 
+`query --context` returns ranked hybrid search hits first, or lexical hits if the local model is unavailable. It reserves up to half of `--limit` (at most four slots) for direct callers and callees of functions and methods among the top five search hits that fit in the remaining slots. A neighbor already in those search slots keeps its position. Graph matches include the call-site span when available, and unused neighbor slots go to search hits.
+
 Call edges are inferred from syntax, not observed at runtime. Binding evidence comes from same-file or import/qualifier resolution; name evidence comes from a unique bare-name match. Use `--min-evidence binding` with impact, caller, callee, or call-chain queries to exclude name-only matches. Use `--with-evidence` with callers, callees, or symbol impact to see the evidence on hits. Verify important relationships in source before relying on them.
 
 `--review` identifies changed symbols from the old and new Git revisions. It uses matching nodes in the working-tree index for caller, risk, and test-gap estimates. Test gaps are inferred from calls, not measured test coverage.

@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::class;
 use crate::freshness::{self, Freshness};
-use crate::ingest::CallEvidence;
+use crate::ingest::{CallEvidence, CallSite};
 use crate::{analysis, branch, centrality, embed, envelope, fts, fuse, graph, health, markdown, ownership, review, snapshot, vectors, LATTICE_DIR};
 
 /// Default hit limit for symbol and semantic queries.
@@ -550,23 +550,6 @@ pub fn route_value(rest: &[&str]) -> (Value, Disposition) {
     }
 
     (env, disp)
-}
-
-/// `foo`, `foo_bar`, `foo::bar`, `Auth::login`. Not a phrase, not a path.
-fn is_symbol_shaped(text: &str) -> bool {
-    if text.is_empty() || text.contains(char::is_whitespace) {
-        return false;
-    }
-    let mut parts = text.split("::");
-    parts.all(|part| {
-        let mut chars = part.chars();
-        match chars.next() {
-            Some(c) if c == '_' || c.is_ascii_alphabetic() => {
-                chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
-            }
-            _ => false,
-        }
-    }) && text.split("::").any(|p| !p.is_empty())
 }
 
 fn internal(msg: String) -> (Value, Disposition) {
@@ -1264,21 +1247,84 @@ fn dispatch_hybrid(
         );
     }
 
+    let (mut hits, fts_hits_count, vec_hits_count) =
+        match ranked_hybrid(lattice_dir, text, filters, true) {
+            Ok(results) => results,
+            Err(e) => return internal(e.to_string()),
+        };
+    hits.truncate(filters.limit);
+
+    let envelope_hits: Vec<_> = hits
+        .into_iter()
+        .map(|h| {
+            (
+                h.path,
+                h.name,
+                h.kind,
+                h.start_line,
+                h.end_line,
+                h.class,
+                h.fused_score,
+                h.sources,
+                h.fts_rank,
+                h.vector_rank,
+                h.vector_score,
+                h.in_degree,
+            )
+        })
+        .collect();
+
+    eprintln!(
+        "lattice: hybrid query {text:?}: {} FTS hit(s), {} vector hit(s), {} fused hit(s)",
+        fts_hits_count,
+        vec_hits_count,
+        envelope_hits.len()
+    );
+
+    let mut env = envelope::hybrid(text, &envelope_hits, freshness.as_str());
+    if vec_hits_count == 0 && vectors::document_count(lattice_dir) == 0 {
+        eprintln!("lattice: semantic index is empty");
+        env["vectors_empty"] = json!(true);
+    }
+    attach_parent_spans(&mut env, lattice_dir);
+    (env, Disposition::Ok)
+}
+
+struct HybridHit {
+    key: String,
+    path: String,
+    name: String,
+    kind: String,
+    start_line: usize,
+    end_line: Option<usize>,
+    class: String,
+    fused_score: f64,
+    sources: Vec<String>,
+    fts_rank: Option<usize>,
+    vector_rank: Option<usize>,
+    vector_score: Option<f32>,
+    in_degree: usize,
+}
+
+fn ranked_hybrid(
+    lattice_dir: &Path,
+    text: &str,
+    filters: &Filters,
+    use_vectors: bool,
+) -> crate::Result<(Vec<HybridHit>, usize, usize)> {
     // FTS backend at FUSION_DEPTH.
     let fts_filters = fts::Filters {
         limit: FUSION_DEPTH,
         exclude_tests: filters.exclude_tests,
         kind: None, // hybrid is kind-agnostic on the input side
     };
-    let fts_hits = match fts::search(lattice_dir, text, &fts_filters) {
-        Ok(h) => h,
-        Err(e) => return internal(e.to_string()),
-    };
+    let fts_hits = fts::search(lattice_dir, text, &fts_filters)?;
 
     // Vector backend at SEMANTIC_LIMIT (already 20 = FUSION_DEPTH).
-    let vec_hits = match vectors::query(lattice_dir, text) {
-        Ok(h) => h,
-        Err(e) => return internal(e.to_string()),
+    let vec_hits = if use_vectors {
+        vectors::query(lattice_dir, text)?
+    } else {
+        Vec::new()
     };
 
     // Apply --exclude-tests to vector hits (same as dispatch_semantic).
@@ -1328,10 +1374,7 @@ fn dispatch_hybrid(
         .filter_map(|f| vec_map.get(&f.key).map(|h| (h.path.clone(), h.symbol.clone())))
         .filter(|(_, sym)| !sym.is_empty())
         .collect();
-    let extra_degrees = match fts::in_degrees(lattice_dir, &vec_only_keys) {
-        Ok(m) => m,
-        Err(e) => return internal(e.to_string()),
-    };
+    let extra_degrees = fts::in_degrees(lattice_dir, &vec_only_keys)?;
 
     // Build the ranked hit list with secondary sort by in_degree DESC, then
     // name ASC, path ASC, start_line ASC (per design §1.1 final ordering).
@@ -1339,21 +1382,6 @@ fn dispatch_hybrid(
     // applies in_degree as first tie-break.
     //
     // Strategy: collect all data, then sort once with the full comparator.
-    struct HybridHit {
-        path: String,
-        name: String,
-        kind: String,
-        start_line: usize,
-        end_line: Option<usize>,
-        class: String,
-        fused_score: f64,
-        sources: Vec<String>,
-        fts_rank: Option<usize>,
-        vector_rank: Option<usize>,
-        vector_score: Option<f32>,
-        in_degree: usize,
-    }
-
     let mut hits: Vec<HybridHit> = fused
         .iter()
         .map(|f| {
@@ -1401,6 +1429,7 @@ fn dispatch_hybrid(
             };
 
             HybridHit {
+                key: f.key.clone(),
                 path,
                 name,
                 kind,
@@ -1428,42 +1457,7 @@ fn dispatch_hybrid(
             .then_with(|| a.start_line.cmp(&b.start_line))
     });
 
-    hits.truncate(filters.limit);
-
-    let envelope_hits: Vec<_> = hits
-        .into_iter()
-        .map(|h| {
-            (
-                h.path,
-                h.name,
-                h.kind,
-                h.start_line,
-                h.end_line,
-                h.class,
-                h.fused_score,
-                h.sources,
-                h.fts_rank,
-                h.vector_rank,
-                h.vector_score,
-                h.in_degree,
-            )
-        })
-        .collect();
-
-    eprintln!(
-        "lattice: hybrid query {text:?}: {} FTS hit(s), {} vector hit(s), {} fused hit(s)",
-        fts_hits_count,
-        vec_hits_count,
-        envelope_hits.len()
-    );
-
-    let mut env = envelope::hybrid(text, &envelope_hits, freshness.as_str());
-    if vec_hits_count == 0 && vectors::document_count(lattice_dir) == 0 {
-        eprintln!("lattice: semantic index is empty");
-        env["vectors_empty"] = json!(true);
-    }
-    attach_parent_spans(&mut env, lattice_dir);
-    (env, Disposition::Ok)
+    Ok((hits, fts_hits_count, vec_hits_count))
 }
 
 fn dispatch_owners(
@@ -1746,153 +1740,154 @@ fn dispatch_similar(
     }
 }
 
+const CONTEXT_SEED_LIMIT: usize = 5;
+const CONTEXT_NEIGHBOR_LIMIT: usize = 4;
+
 fn dispatch_context(
     lattice_dir: &Path,
     text: &str,
     freshness: Freshness,
     filters: &Filters,
 ) -> (Value, Disposition) {
-    let mut by_id: BTreeMap<String, envelope::ContextHit> = BTreeMap::new();
-
-    let fts_filters = fts::Filters {
-        limit: filters.limit,
-        exclude_tests: filters.exclude_tests,
-        kind: None,
-    };
-    let lexical = match fts::search(lattice_dir, text, &fts_filters) {
-        Ok(h) => h,
+    // A missing model leaves the lexical ranking available.
+    let use_vectors = embed::ensure_model_present().is_ok();
+    let (ranked, _, _) = match ranked_hybrid(lattice_dir, text, filters, use_vectors) {
+        Ok(results) => results,
         Err(e) => return internal(e.to_string()),
     };
-    for hit in lexical {
-        let id = format!("{}::{}", hit.path, hit.name);
-        by_id
-            .entry(id.clone())
-            .or_insert_with(|| envelope::ContextHit {
-                id,
-                path: hit.path.clone(),
-                name: hit.name.clone(),
-                kind: hit.kind.clone(),
-                line: hit.line,
-                matched_by: Vec::new(),
-                evidence: None,
-            })
-            .matched_by
-            .push("fts".to_string());
-    }
-
-    // Vector KNN is best-effort: a missing model does not fail the pack, it
-    // just contributes no vector hits. A present model that errors does.
-    if embed::ensure_model_present().is_ok() {
-        match vectors::query(lattice_dir, text) {
-            Ok(hits) => {
-                for hit in hits.into_iter().take(filters.limit) {
-                    if filters.exclude_tests {
-                        let c = class::classify(&hit.path);
-                        if c == class::SourceClass::Test || c == class::SourceClass::Fixture {
-                            continue;
-                        }
-                    }
-                    let name = if hit.symbol.is_empty() {
-                        hit.path.clone()
-                    } else {
-                        hit.symbol.clone()
-                    };
-                    let id = if hit.symbol.is_empty() {
-                        hit.path.clone()
-                    } else {
-                        format!("{}::{}", hit.path, hit.symbol)
-                    };
-                    let entry = by_id.entry(id.clone()).or_insert_with(|| envelope::ContextHit {
-                        id,
-                        path: hit.path.clone(),
-                        name,
-                        kind: hit.kind.clone(),
-                        line: hit.start_line,
-                        matched_by: Vec::new(),
-                        evidence: None,
-                    });
-                    entry.matched_by.push("vector".to_string());
-                }
-            }
-            Err(e) => return internal(e.to_string()),
-        }
-    }
 
     let cg = match graph::load_call_graph(lattice_dir) {
         Ok(cg) => cg,
         Err(e) => return internal(e.to_string()),
     };
-    // One-hop neighbors of any symbol the text resolves. The call-site span
-    // rides the edge that justified the hop.
-    for token in symbol_tokens(text) {
-        for node in graph::resolve_symbol(&cg, &token) {
-            let neighbors = cg
-                .out
-                .get(&node.id)
-                .into_iter()
-                .flatten()
-                .chain(cg.inn.get(&node.id).into_iter().flatten());
-            for other_id in neighbors {
-                let Some(other) = cg.nodes.get(other_id) else {
-                    continue;
-                };
-                if filters.exclude_tests {
-                    let c = class::classify(&other.path);
-                    if c == class::SourceClass::Test || c == class::SourceClass::Fixture {
-                        continue;
-                    }
-                }
-                let site = cg
-                    .sites
-                    .get(&(node.id.clone(), other.id.clone()))
-                    .or_else(|| cg.sites.get(&(other.id.clone(), node.id.clone())))
-                    .cloned();
-                let entry = by_id.entry(other.id.clone()).or_insert_with(|| {
-                    envelope::ContextHit {
-                        id: other.id.clone(),
-                        path: other.path.clone(),
-                        name: other.name.clone(),
-                        kind: "function".to_string(),
-                        line: other.line,
-                        matched_by: Vec::new(),
-                        evidence: None,
-                    }
-                });
-                if !entry.matched_by.iter().any(|t| t == "graph") {
-                    entry.matched_by.push("graph".to_string());
-                }
-                if entry.evidence.is_none() {
-                    entry.evidence = site;
-                }
-            }
-        }
-    }
-
-    let mut hits: Vec<envelope::ContextHit> = by_id.into_values().collect();
-    for hit in &mut hits {
-        hit.matched_by.sort();
-        hit.matched_by.dedup();
-    }
-    hits.sort_by(|a, b| a.id.cmp(&b.id));
-    hits.truncate(filters.limit);
+    let hits = expand_context(ranked, &cg, filters);
     eprintln!("lattice: context {text:?}: {} hit(s)", hits.len());
     (envelope::context(&hits, freshness.as_str()), Disposition::Ok)
 }
 
-/// Identifier-shaped tokens inside a free-text question, plus the whole text
-/// when it is itself a symbol. Used to seed the graph hop of a context pack.
-fn symbol_tokens(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    if is_symbol_shaped(text) {
-        out.push(text.to_string());
+fn expand_context(
+    ranked: Vec<HybridHit>,
+    cg: &graph::CallGraph,
+    filters: &Filters,
+) -> Vec<envelope::ContextHit> {
+    let mut nodes_by_location = BTreeMap::new();
+    for node in cg.nodes.values() {
+        nodes_by_location
+            .entry((node.path.as_str(), node.name.as_str(), node.line))
+            .and_modify(|id| *id = None)
+            .or_insert(Some(node.id.as_str()));
     }
-    for word in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != ':') {
-        let word = word.trim_matches(':');
-        if is_symbol_shaped(word) && !out.iter().any(|s| s == word) {
-            out.push(word.to_string());
+
+    let neighbor_budget = CONTEXT_NEIGHBOR_LIMIT.min(filters.limit / 2);
+    let head_len = ranked.len().min(filters.limit - neighbor_budget);
+    let mut seeds = Vec::new();
+    let mut hits = Vec::new();
+    let mut by_id = BTreeMap::new();
+    for (rank, hit) in ranked.into_iter().enumerate() {
+        let graph_id = if matches!(hit.kind.as_str(), "function" | "method") {
+            nodes_by_location
+                .get(&(hit.path.as_str(), hit.name.as_str(), hit.start_line))
+                .copied()
+                .flatten()
+        } else {
+            None
+        };
+        if rank < head_len.min(CONTEXT_SEED_LIMIT) {
+            seeds.extend(graph_id);
+        }
+        let id = graph_id.map(str::to_owned).unwrap_or(hit.key);
+        by_id.insert(id.clone(), hits.len());
+        hits.push(envelope::ContextHit {
+            id,
+            path: hit.path,
+            name: hit.name,
+            kind: hit.kind,
+            line: hit.start_line,
+            matched_by: hit.sources,
+            evidence: None,
+        });
+    }
+
+    // Protect the search prefix. Lower-ranked candidates may fill graph slots
+    // without losing their retrieval provenance. Visit edges in seed order,
+    // with outgoing edges before incoming edges.
+    let mut expanded = BTreeMap::<&str, usize>::new();
+    let mut neighbors = Vec::<(&graph::SymbolNode, Option<usize>, Option<&CallSite>)>::new();
+    for seed in seeds {
+        let outgoing = cg.out.get(seed).into_iter().flatten().map(|id| (id, true));
+        let incoming = cg.inn.get(seed).into_iter().flatten().map(|id| (id, false));
+        for (id, outgoing) in outgoing.chain(incoming) {
+            if id == seed {
+                continue;
+            }
+            let Some(other) = cg.nodes.get(id) else {
+                continue;
+            };
+            if filters.exclude_tests
+                && matches!(
+                    class::classify(&other.path),
+                    class::SourceClass::Test | class::SourceClass::Fixture
+                )
+            {
+                continue;
+            }
+
+            let index = by_id.get(id).copied();
+            // Once the budget is full, only inspect edges that can annotate a
+            // retrieved hit or add missing evidence to a selected neighbor.
+            if index.is_none()
+                && neighbors.len() == neighbor_budget
+                && !expanded.contains_key(id.as_str())
+            {
+                continue;
+            }
+            let key = if outgoing {
+                (seed.to_owned(), id.clone())
+            } else {
+                (id.clone(), seed.to_owned())
+            };
+            let site = cg.sites.get(&key);
+            if let Some(index) = index {
+                let hit = &mut hits[index];
+                if !hit.matched_by.iter().any(|tag| tag == "graph") {
+                    hit.matched_by.push("graph".to_owned());
+                    hit.matched_by.sort();
+                }
+                if hit.evidence.is_none() {
+                    hit.evidence = site.cloned();
+                }
+            }
+            if let Some(&slot) = expanded.get(id.as_str()) {
+                if neighbors[slot].2.is_none() {
+                    neighbors[slot].2 = site;
+                }
+            } else if neighbors.len() < neighbor_budget && index.is_none_or(|i| i >= head_len) {
+                expanded.insert(id.as_str(), neighbors.len());
+                neighbors.push((other, index, site));
+            }
         }
     }
-    out
+
+    let retrieval_budget = filters.limit - neighbors.len();
+    let mut hits: Vec<_> = hits.into_iter().map(Some).collect();
+    let neighbors: Vec<_> = neighbors
+        .into_iter()
+        .map(|(other, index, site)| {
+            index.and_then(|i| hits[i].take()).unwrap_or_else(|| {
+                let kind = if other.parent.is_some() { "method" } else { "function" };
+                envelope::ContextHit {
+                    id: other.id.clone(),
+                    path: other.path.clone(),
+                    name: other.name.clone(),
+                    kind: kind.to_owned(),
+                    line: other.line,
+                    matched_by: vec!["graph".to_owned()],
+                    evidence: site.cloned(),
+                }
+            })
+        })
+        .collect();
+    hits.into_iter().flatten().take(retrieval_budget).chain(neighbors).collect()
 }
 
 fn dispatch_peek(

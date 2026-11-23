@@ -97,6 +97,81 @@ fn context_tags_graph_and_lexical_hits() {
 }
 
 #[test]
+fn context_expands_ranked_hits_without_symbol_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("workflow.rs"),
+        "fn zulu_manifest() -> usize {\n\
+         let shipment = alpha();\n\
+         shipment\n\
+         }\n\
+         fn alpha() -> usize {\n\
+         beta()\n\
+         }\n\
+         fn beta() -> usize { 42 }\n",
+    )
+    .unwrap();
+    let init = run_in(root, &["init"]);
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    // With no model at query time, only `zulu_manifest` matches the search. Neither
+    // function name appears in the question, and `beta` is two hops away.
+    let query = |limit| {
+        let out = Command::new(BIN)
+            .current_dir(root)
+            .env("LATTICE_MODEL_DIR", root.join("missing-model"))
+            .args([
+                "query", "--context", "prepare shipment manifest", "--limit", limit,
+            ])
+            .output()
+            .expect("spawn");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        parse_json(&out)
+    };
+    let env = query("3");
+    let hits = env["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0]["name"], "zulu_manifest");
+    assert_eq!(hits[0]["matched_by"], serde_json::json!(["fts"]));
+    assert_eq!(hits[1]["name"], "alpha");
+    assert_eq!(hits[1]["matched_by"], serde_json::json!(["graph"]));
+    assert_eq!(
+        hits[1]["evidence"],
+        serde_json::json!({"path": "workflow.rs", "start_line": 2, "end_line": 2}),
+    );
+    assert_eq!(query("1")["hits"], serde_json::json!([hits[0]]));
+
+    // No question terms match FTS; the top vector hit still seeds the graph.
+    let question = "prepare outbound delivery paperwork";
+    let hybrid = run_in(root, &["query", question, "--limit", "1"]);
+    let context = run_in(root, &["query", "--context", question, "--limit", "2"]);
+    for out in [&hybrid, &context] {
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let hybrid = parse_json(&hybrid);
+    let context = parse_json(&context);
+    let hits = context["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0]["name"], hybrid["hits"][0]["name"]);
+    assert_eq!(hits[0]["matched_by"], serde_json::json!(["vector"]));
+    assert_eq!(hits[1]["matched_by"], serde_json::json!(["graph", "vector"]));
+    let line = match (hits[0]["name"].as_str(), hits[1]["name"].as_str()) {
+        (Some("zulu_manifest"), Some("alpha")) | (Some("alpha"), Some("zulu_manifest")) => 2,
+        (Some("alpha"), Some("beta")) | (Some("beta"), Some("alpha")) => 6,
+        _ => panic!("expected adjacent functions, got {hits:?}"),
+    };
+    assert_eq!(
+        hits[1]["evidence"],
+        serde_json::json!({"path": "workflow.rs", "start_line": line, "end_line": line}),
+    );
+}
+
+#[test]
 fn callers_envelope_has_no_span_evidence() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
