@@ -16,7 +16,7 @@ Lattice fuses FTS5 and local embeddings with reciprocal rank fusion, then uses a
 
 ## Related OpenCode projects
 
-See [Structural](https://mariquit.github.io/structural/) for a map of these tools and how they fit into an OpenCode workflow.
+See [Structural](https://john.mariquit.com/#tools) for a map of these tools and how they fit into an OpenCode workflow.
 
 - [Trestle](https://github.com/mariquit/trestle): Software engineering skills for OpenCode
 - [Truss](https://github.com/mariquit/truss): Plugins for OpenCode
