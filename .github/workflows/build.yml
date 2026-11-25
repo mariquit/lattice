@@ -1,0 +1,85 @@
+name: Build Lattice
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (leave blank to build the selected ref)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        if: ${{ !inputs.tag }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check out requested tag
+        if: ${{ inputs.tag }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ format('refs/tags/{0}', inputs.tag) }}
+          persist-credentials: false
+
+      - name: Ensure native build tools are installed
+        shell: bash
+        run: |
+          if ! command -v cc >/dev/null; then
+            if [ "$(id -u)" -eq 0 ]; then
+              apt-get update
+              apt-get install -y --no-install-recommends build-essential
+            else
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends build-essential
+            fi
+          fi
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs |
+              sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+            export PATH="$HOME/.cargo/bin:$PATH"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          rustup toolchain install stable --profile minimal
+
+      - name: Build release binary
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$REQUESTED_TAG" = v0.1.0 ] && [ ! -f Cargo.lock ]; then
+            echo "::warning::v0.1.0 predates the tracked lockfile; resolving dependencies for this build."
+            cargo +stable generate-lockfile
+          fi
+          cargo +stable build --release --locked --bin lattice
+
+      - name: Package and verify binary
+        run: |
+          mkdir -p dist
+          tar -czf dist/lattice-linux-x86_64.tar.gz -C target/release lattice
+          mkdir -p dist/smoke
+          tar -xzf dist/lattice-linux-x86_64.tar.gz -C dist/smoke
+          dist/smoke/lattice --version
+
+      - name: Upload binary archive
+        if: ${{ !env.ACT }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: lattice-linux-x86_64
+          path: dist/lattice-linux-x86_64.tar.gz
+          if-no-files-found: error
+          compression-level: 0

@@ -127,3 +127,5 @@ cargo build && ./target/debug/lattice init
 Production code lives in `src/`, integration tests in `tests/`, and retrieval
 evaluation data and code in `eval/` and `examples/`. The workspace index lives
 under `.lattice/` and is ignored by Git.
+
+If `act` is on PATH and this change would make GitHub run a test, build, or release workflow under `.github/workflows/`, load the `act` skill and run that workflow locally before finishing; if `act` is not installed, skip.
