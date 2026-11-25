@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::class;
 use crate::freshness::{self, Freshness};
-use crate::ingest::{CallEvidence, CallSite};
+use crate::ingest::{self, CallEvidence, CallSite};
 use crate::{analysis, branch, centrality, embed, envelope, fts, fuse, graph, health, markdown, ownership, review, snapshot, vectors, LATTICE_DIR};
 
 /// Default hit limit for symbol and semantic queries.
@@ -187,7 +187,7 @@ fn extract_flags<'a>(rest: &'a [&'a str]) -> Result<(Vec<&'a str>, Filters), Str
                 && other != "--communities" && other != "--community"
                 && other != "--graph-diff" && other != "--review"
                 && other != "--similar" && other != "--peek"
-                && other != "--bridges" && other != "--context" =>
+                && other != "--bridges" && other != "--context" && other != "--show" =>
             {
                 return Err(format!("unknown flag {other:?}"));
             }
@@ -242,6 +242,7 @@ enum Intent<'a> {
     Peek(&'a str),
     Bridges,
     Context(&'a str),
+    Show(&'a str),
     Ambiguous,
 }
 
@@ -302,6 +303,7 @@ fn parse_intent<'a>(rest: &'a [&'a str]) -> Intent<'a> {
         ["--peek", text] if !text.is_empty()      => Intent::Peek(text),
         ["--bridges"]                             => Intent::Bridges,
         ["--context", text] if !text.is_empty()   => Intent::Context(text),
+        ["--show", id] if !id.is_empty()          => Intent::Show(id),
         [text] if !text.is_empty() && !text.starts_with("--") => Intent::Search(text),
         _ => Intent::Ambiguous,
     }
@@ -507,6 +509,7 @@ pub fn route_value(rest: &[&str]) -> (Value, Disposition) {
         Intent::Peek(text) => dispatch_peek(&lattice_dir, text, freshness, &filters),
         Intent::Bridges => dispatch_bridges(&lattice_dir, freshness, &filters),
         Intent::Context(text) => dispatch_context(&lattice_dir, text, freshness, &filters),
+        Intent::Show(id) => dispatch_show(&root, &lattice_dir, id, freshness),
         // unresolvable intent -> ambiguous_query (handled above).
         Intent::Ambiguous => {
             eprintln!("lattice: ambiguous query; give --impact <path>, --callers/--callees/--call-chain <symbol>, or free text");
@@ -1737,6 +1740,95 @@ fn dispatch_similar(
             }
             (envelope::error(code, &msg), Disposition::Error)
         }
+    }
+}
+
+fn dispatch_show(
+    root: &Path,
+    lattice_dir: &Path,
+    id: &str,
+    freshness: Freshness,
+) -> (Value, Disposition) {
+    let error = |code, message: &str| (envelope::error(code, message), Disposition::Error);
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(e) => return internal(format!("resolve workspace root: {e}")),
+    };
+    let mut found = None;
+    // Try the whole-file ID and each possible separator. A path or heading
+    // can itself contain `::`; never read a path absent from the index.
+    let candidates = std::iter::once((id, None)).chain(
+        id.match_indices("::").map(|(i, _)| (&id[..i], Some(&id[i + 2..]))),
+    );
+    for (path, symbol) in candidates {
+        if path.is_empty()
+            || !Path::new(path)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let cached = match crate::meta::read_file_facts(lattice_dir, path) {
+            Ok(Some(cached)) => cached,
+            Ok(None) => continue,
+            Err(e) => return internal(e.to_string()),
+        };
+        let disk_path = root.join(path);
+        let Ok(canonical) = disk_path.canonicalize() else {
+            return error("stale_source", "indexed file is no longer available; retry the query");
+        };
+        if canonical != disk_path {
+            return error("stale_source", "indexed path no longer points directly to its source file");
+        }
+        let bytes = match std::fs::read(&canonical) {
+            Ok(bytes) if crate::meta::content_hash(&bytes) == cached.content_hash => bytes,
+            _ => return error("stale_source", "source changed after indexing; retry the query"),
+        };
+        let source = String::from_utf8_lossy(&bytes);
+        let mut spans = Vec::new();
+        match symbol {
+            None => spans.push((1, source.lines().count().max(1), source.into_owned())),
+            Some(heading) if ingest::language_for_path(path) == "markdown" => {
+                let stem = Path::new(path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(path);
+                spans.extend(
+                    markdown::parse_sections(&source, stem)
+                        .into_iter()
+                        .filter(|section| section.heading == heading)
+                        .map(|section| (section.start_line, section.end_line, section.text)),
+                );
+            }
+            Some(symbol) => {
+                let facts: ingest::FileFacts = match serde_json::from_str(&cached.facts_json) {
+                    Ok(facts) => facts,
+                    Err(e) => return internal(format!("decode cached facts for {path}: {e}")),
+                };
+                for decl in facts.functions.iter().filter(|decl| match &decl.parent {
+                    Some(parent) => symbol
+                        .strip_prefix(parent)
+                        .and_then(|rest| rest.strip_prefix("::"))
+                        .is_some_and(|name| name == decl.name),
+                    None => symbol == decl.name,
+                }) {
+                    let Some(text) = source.get(decl.byte_range.clone()).filter(|text| !text.is_empty()) else {
+                        return internal(format!("invalid declaration span for {id}"));
+                    };
+                    spans.push((decl.start_line, decl.start_line + text.lines().count() - 1, text.to_owned()));
+                }
+            }
+        }
+        for (start_line, end_line, source) in spans {
+            if found.is_some() {
+                return error("ambiguous_symbol", &format!("more than one indexed span matches '{id}'"));
+            }
+            found = Some(envelope::show(id, path, start_line, end_line, &source, freshness.as_str()));
+        }
+    }
+    match found {
+        Some(env) => (env, Disposition::Ok),
+        None => error("not_found", &format!("no indexed source matches '{id}'")),
     }
 }
 

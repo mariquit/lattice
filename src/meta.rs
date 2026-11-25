@@ -105,6 +105,25 @@ pub struct CachedFacts {
     pub facts_json: String,
 }
 
+/// Look up one indexed path without loading every cached fragment.
+pub fn read_file_facts(lattice_dir: &Path, path: &str) -> Result<Option<CachedFacts>> {
+    use rusqlite::OptionalExtension;
+
+    let conn = Connection::open(lattice_dir.join(META_DB))?;
+    Ok(conn
+        .query_row(
+            "SELECT content_hash, facts_json FROM file_facts WHERE path = ?1",
+            [path],
+            |row| {
+                Ok(CachedFacts {
+                    content_hash: row.get(0)?,
+                    facts_json: row.get(1)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 /// Read the per-file parse-fragment cache. Returns `path -> CachedFacts`.
 /// Empty when the `file_facts` table is absent (first-ever init, or a store
 /// written before slice 10) — every file is then parsed fresh.

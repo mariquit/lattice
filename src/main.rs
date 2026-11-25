@@ -162,6 +162,7 @@ usage:
   lattice query --graph-diff a b  diff two snapshots (or \"working\")
   lattice query --hotspots        high-churn, high-coupling files
   lattice query --dead-code       unused functions (heuristic)
+  lattice query --show <hit-id>   exact source for an indexed context hit
   lattice context [--task <text>] repository overview and suggested queries
   lattice snapshot <label>        save a graph manifest for --graph-diff
   lattice export                  write human-readable OKF Markdown

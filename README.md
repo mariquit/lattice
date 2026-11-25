@@ -53,6 +53,7 @@ The OpenCode skill uses these same commands. `lattice install` does not create a
 | Search by symbol name or look up a Markdown heading | `lattice query --symbol <text>` |
 | Find similar symbols or get locator-only search results | `lattice query --similar <symbol>` or `lattice query --peek "<text>"` |
 | Retrieve a graph-enriched context pack or file-level vector results | `lattice query --context "<text>"` or `lattice query "<text>" --file-level` |
+| Read the source for one indexed context hit | `lattice query --show '<hit-id>'` |
 | Check file or symbol impact | `lattice query --impact <path>` or `lattice query --impact --symbol <name>` |
 | Trace calls | `lattice query --callers <symbol>`, `lattice query --callees <symbol>`, or `lattice query --call-chain <from> <to>` |
 | Inspect ownership, churn, and co-changes | `lattice query --owners <path>` |
@@ -69,7 +70,11 @@ For retrieval, use `--limit` to cap results and `--exclude-tests` to filter test
 
 `query --context` returns ranked hybrid search hits first, or lexical hits if the local model is unavailable. It reserves up to half of `--limit` (at most four slots) for direct callers and callees of functions and methods among the top five search hits that fit in the remaining slots. A neighbor already in those search slots keeps its position. Graph matches include the call-site span when available, and unused neighbor slots go to search hits.
 
+Pass a hit's exact `id` to `query --show` to retrieve its source, repo-relative `path`, and inclusive `start_line` and `end_line`. For example, `lattice query --show 'src/checkout.ts::Checkout::submit'` returns only that method declaration. A Markdown hit returns its section; a file or module hit returns the indexed file. Unknown or ambiguous IDs return an error instead of selecting a different hit. Search results do not include source text.
+
 Call edges are inferred from syntax, not observed at runtime. Binding evidence comes from same-file or import/qualifier resolution; name evidence comes from a unique bare-name match. Use `--min-evidence binding` with impact, caller, callee, or call-chain queries to exclude name-only matches. Use `--with-evidence` with callers, callees, or symbol impact to see the evidence on hits. Verify important relationships in source before relying on them.
+
+For TypeScript, Lattice can follow `this.field.method()` when an explicit class field or constructor parameter property names a class declared in the same file or brought in by a direct named import. It does not infer a receiver from assignments, follow inheritance, or resolve union or generic receiver annotations.
 
 `--review` identifies changed symbols from the old and new Git revisions. It uses matching nodes in the working-tree index for caller, risk, and test-gap estimates. Test gaps are inferred from calls, not measured test coverage.
 

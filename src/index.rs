@@ -107,7 +107,7 @@ pub fn collect_source_files(
 /// a full reparse on next `init` or query-time refresh — `ensure_fresh` reads
 /// this constant to detect a binary upgrade (schema drift = under-resolved graph
 /// = stale). `index::run` writes it after every successful run.
-pub const FACTS_SCHEMA_VERSION: &str = "6";
+pub const FACTS_SCHEMA_VERSION: &str = "7";
 
 /// Build/refresh every store under `.lattice/` from the current tree,
 /// incrementally: re-parse only changed/new files (fragment-cache reuse for the

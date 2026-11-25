@@ -852,6 +852,26 @@ pub struct ContextHit {
     pub evidence: Option<crate::ingest::CallSite>,
 }
 
+pub fn show(
+    id: &str,
+    path: &str,
+    start_line: usize,
+    end_line: usize,
+    source: &str,
+    freshness: &str,
+) -> Value {
+    json!({
+        "protocol_version": PROTOCOL_VERSION,
+        "query_type": "show",
+        "id": id,
+        "path": path,
+        "start_line": start_line,
+        "end_line": end_line,
+        "source": source,
+        "freshness": freshness,
+    })
+}
+
 /// `lattice query --context "<text>"`. Additive query type; no protocol bump.
 pub fn context(hits: &[ContextHit], freshness: &str) -> Value {
     let hit_values: Vec<Value> = hits

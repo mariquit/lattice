@@ -28,6 +28,9 @@ pub struct FnDecl {
     /// instead of erroring; a schema-version bump forces re-parse in practice.
     #[serde(default)]
     pub end_line: usize,
+    /// Exact declaration bytes in the UTF-8 text passed to Tree-sitter.
+    #[serde(default)]
+    pub byte_range: std::ops::Range<usize>,
     /// Enclosing class / impl type. `None` = free function.
     #[serde(default)]
     pub parent: Option<String>,
@@ -91,6 +94,8 @@ pub struct CallRef {
     /// 1-based inclusive end line of the call expression.
     #[serde(default)]
     pub end_line: usize,
+    #[serde(default)]
+    ts_receiver: Option<TsReceiver>,
 }
 
 impl CallRef {
@@ -106,6 +111,7 @@ impl CallRef {
             qualifier,
             start_line: node.start_position().row + 1,
             end_line: node.end_position().row + 1,
+            ts_receiver: None,
         }
     }
 }
@@ -147,6 +153,31 @@ pub struct FileFacts {
     /// TypeScript export-from / Python __init__ re-exports.
     #[serde(default)]
     pub reexports: Vec<ReExport>,
+    #[serde(default)]
+    ts_classes: Vec<TsClass>,
+    #[serde(default)]
+    ts_named_imports: Vec<TsNamedImport>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TsReceiver {
+    caller_class: String,
+    field: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TsClass {
+    name: String,
+    exported: bool,
+    fields: Vec<(String, Option<String>)>,
+    methods: Vec<(String, bool)>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct TsNamedImport {
+    module: String,
+    exported: String,
+    local: String,
 }
 
 // ── Resolved graph (what gets persisted to SparrowDB) ────────────────────────
@@ -260,17 +291,7 @@ fn parse_custom(rel_path: &str, source: &str, entry: &crate::languages::Language
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| format!("tree-sitter failed to parse {rel_path}"))?;
-    let mut facts = FileFacts {
-        path: rel_path.to_string(),
-        language: crate::languages::language_label(&entry.grammar),
-        functions: Vec::new(),
-        calls: Vec::new(),
-        mod_decls: Vec::new(),
-        use_decls: Vec::new(),
-        from_imports: Vec::new(),
-        ns_imports: Vec::new(),
-        reexports: Vec::new(),
-    };
+    let mut facts = empty_facts(rel_path, crate::languages::language_label(&entry.grammar));
     walk_custom(tree.root_node(), source.as_bytes(), entry, None, &mut facts);
     Ok(facts)
 }
@@ -333,6 +354,7 @@ fn walk_custom(
                 name: name.clone(),
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
+                byte_range: node.byte_range(),
                 parent: None,
             });
             next = Some(name);
@@ -368,6 +390,8 @@ fn empty_facts(rel_path: &str, language: &'static str) -> FileFacts {
         from_imports: Vec::new(),
         ns_imports: Vec::new(),
         reexports: Vec::new(),
+        ts_classes: Vec::new(),
+        ts_named_imports: Vec::new(),
     }
 }
 
@@ -382,17 +406,7 @@ pub fn parse_rust_file(rel_path: &str, source: &str) -> Result<FileFacts> {
         .parse(source, None)
         .ok_or_else(|| format!("tree-sitter failed to parse {rel_path}"))?;
 
-    let mut facts = FileFacts {
-        path: rel_path.to_string(),
-        language: "rust",
-        functions: Vec::new(),
-        calls: Vec::new(),
-        mod_decls: Vec::new(),
-        use_decls: Vec::new(),
-        from_imports: Vec::new(),
-        ns_imports: Vec::new(),
-        reexports: Vec::new(),
-    };
+    let mut facts = empty_facts(rel_path, "rust");
     walk(tree.root_node(), source.as_bytes(), None, None, &mut facts);
     Ok(facts)
 }
@@ -422,6 +436,7 @@ fn walk(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing_type: Opti
                     name: name.clone(),
                     start_line: node.start_position().row + 1,
                     end_line: node.end_position().row + 1,
+                    byte_range: node.byte_range(),
                     parent,
                 });
                 next_enclosing = Some(name);
@@ -720,17 +735,7 @@ pub fn parse_python_file(rel_path: &str, source: &str) -> Result<FileFacts> {
         .parse(source, None)
         .ok_or_else(|| format!("tree-sitter failed to parse {rel_path}"))?;
 
-    let mut facts = FileFacts {
-        path: rel_path.to_string(),
-        language: "python",
-        functions: Vec::new(),
-        calls: Vec::new(),
-        mod_decls: Vec::new(),
-        use_decls: Vec::new(),
-        from_imports: Vec::new(),
-        ns_imports: Vec::new(),
-        reexports: Vec::new(),
-    };
+    let mut facts = empty_facts(rel_path, "python");
     walk_python(tree.root_node(), source.as_bytes(), None, None, &mut facts);
     Ok(facts)
 }
@@ -755,6 +760,7 @@ fn walk_python(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing_cla
                     name: name.clone(),
                     start_line: node.start_position().row + 1,
                     end_line: node.end_position().row + 1,
+                    byte_range: node.byte_range(),
                     parent,
                 });
                 next_enclosing = Some(name);
@@ -914,17 +920,7 @@ pub fn parse_typescript_file(rel_path: &str, source: &str) -> Result<FileFacts> 
         .parse(source, None)
         .ok_or_else(|| format!("tree-sitter failed to parse {rel_path}"))?;
 
-    let mut facts = FileFacts {
-        path: rel_path.to_string(),
-        language: "typescript",
-        functions: Vec::new(),
-        calls: Vec::new(),
-        mod_decls: Vec::new(),
-        use_decls: Vec::new(),
-        from_imports: Vec::new(),
-        ns_imports: Vec::new(),
-        reexports: Vec::new(),
-    };
+    let mut facts = empty_facts(rel_path, "typescript");
     walk_typescript(tree.root_node(), source.as_bytes(), None, None, &mut facts);
     Ok(facts)
 }
@@ -938,6 +934,9 @@ fn walk_typescript(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing
         "class_declaration" => {
             if let Some(name_node) = node.child_by_field_name("name") {
                 let class_name = text(name_node, src).to_string();
+                if let Some(class) = ts_top_level_class(node, &class_name, src) {
+                    facts.ts_classes.push(class);
+                }
                 next_class = Some(class_name);
             }
         }
@@ -949,6 +948,7 @@ fn walk_typescript(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing
                     name: name.clone(),
                     start_line: node.start_position().row + 1,
                     end_line: node.end_position().row + 1,
+                    byte_range: node.byte_range(),
                     parent: enclosing_class.map(str::to_string),
                 });
                 next_enclosing = Some(name);
@@ -965,6 +965,7 @@ fn walk_typescript(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing
                         name: name.clone(),
                         start_line: node.start_position().row + 1,
                         end_line: node.end_position().row + 1,
+                        byte_range: node.byte_range(),
                         parent,
                     });
                     next_enclosing = Some(name);
@@ -990,12 +991,21 @@ fn walk_typescript(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing
                                             let mut ni = ic_child.walk();
                                             for ni_child in ic_child.children(&mut ni) {
                                                 if ni_child.kind() == "import_specifier" {
-                                                    // name is the local binding
+                                                    // Preserve the original import for existing resolution.
                                                     let import_name = ni_child
                                                         .child_by_field_name("name")
                                                         .map(|n| text(n, src).to_string())
                                                         .unwrap_or_default();
                                                     if !import_name.is_empty() {
+                                                        if node.parent().is_some_and(|p| p.kind() == "program") {
+                                                            let local = ni_child.child_by_field_name("alias")
+                                                                .map_or(import_name.as_str(), |n| text(n, src));
+                                                            facts.ts_named_imports.push(TsNamedImport {
+                                                                module: spec.clone(),
+                                                                exported: import_name.clone(),
+                                                                local: local.to_owned(),
+                                                            });
+                                                        }
                                                         facts.from_imports.push((spec.clone(), import_name));
                                                     }
                                                 }
@@ -1086,6 +1096,10 @@ fn walk_typescript(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing
                                         Some(text(obj, src).to_string()),
                                         node,
                                     ));
+                                } else if let Some(receiver) = ts_field_receiver(obj, node, src) {
+                                    let mut call = CallRef::new(caller, text(prop, src).to_owned(), None, node);
+                                    call.ts_receiver = Some(receiver);
+                                    facts.calls.push(call);
                                 }
                             }
                         }
@@ -1101,6 +1115,167 @@ fn walk_typescript(node: Node, src: &[u8], enclosing_fn: Option<&str>, enclosing
     for child in node.children(&mut cursor) {
         walk_typescript(child, src, next_enclosing.as_deref(), next_class.as_deref(), facts);
     }
+}
+
+fn ts_has_child(node: Node, kinds: &[&str]) -> bool {
+    let mut cursor = node.walk();
+    let found = node.children(&mut cursor).any(|child| kinds.contains(&child.kind()));
+    found
+}
+
+fn ts_field_type(node: Node, src: &[u8]) -> Option<String> {
+    let ty = node.child_by_field_name("type")?.named_child(0)?;
+    (ty.kind() == "type_identifier").then(|| text(ty, src).to_owned())
+}
+
+fn ts_top_level_class(node: Node, name: &str, src: &[u8]) -> Option<TsClass> {
+    let parent = node.parent()?;
+    let is_export = parent.kind() == "export_statement";
+    if (is_export && parent.parent()?.kind() != "program")
+        || (!is_export && parent.kind() != "program")
+    {
+        return None;
+    }
+    let mut class = TsClass {
+        name: name.to_owned(),
+        exported: is_export && !ts_has_child(parent, &["default"]),
+        fields: Vec::new(),
+        methods: Vec::new(),
+    };
+    // Type parameters can shadow a class of the same name.
+    let field_type = |field| {
+        if node.child_by_field_name("type_parameters").is_some() {
+            None
+        } else {
+            ts_field_type(field, src)
+        }
+    };
+    let body = node.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    for member in body.named_children(&mut cursor) {
+        let Some(field) = member.child_by_field_name("name") else { continue };
+        let field = text(field, src);
+        match member.kind() {
+            "public_field_definition" => {
+                let ty = if ts_has_child(member, &["static"]) {
+                    None
+                } else {
+                    field_type(member)
+                };
+                class.fields.push((field.to_owned(), ty));
+            }
+            "method_definition" if field == "constructor" => {
+                let Some(params) = member.child_by_field_name("parameters") else { continue };
+                let mut cursor = params.walk();
+                for param in params.named_children(&mut cursor) {
+                    if !matches!(param.kind(), "required_parameter" | "optional_parameter")
+                        || !ts_has_child(param, &["accessibility_modifier", "readonly", "override_modifier"])
+                    {
+                        continue;
+                    }
+                    let Some(field) = param.child_by_field_name("pattern").or_else(|| param.child_by_field_name("name")) else { continue };
+                    if field.kind() == "identifier" {
+                        class.fields.push((text(field, src).to_owned(), field_type(param)));
+                    }
+                }
+            }
+            "method_definition" => class.methods.push((
+                field.to_owned(),
+                !ts_has_child(member, &["static", "get", "set"]),
+            )),
+            _ => {}
+        }
+    }
+    Some(class)
+}
+
+fn ts_field_receiver(receiver: Node, call: Node, src: &[u8]) -> Option<TsReceiver> {
+    if receiver.kind() != "member_expression"
+        || receiver.child_by_field_name("object")?.kind() != "this"
+    {
+        return None;
+    }
+    let field = receiver.child_by_field_name("property")?;
+    if field.kind() != "property_identifier" {
+        return None;
+    }
+
+    // `this` must belong to an indexed instance method, not a nested
+    // ordinary function, object method, or a static method.
+    let mut ancestor = call.parent();
+    while let Some(node) = ancestor {
+        match node.kind() {
+            "method_definition" => {
+                let name = node.child_by_field_name("name")?;
+                let class_body = node.parent()?;
+                let class = class_body.parent()?;
+                if text(name, src) == "constructor"
+                    || ts_has_child(node, &["static", "get", "set"])
+                    || class_body.kind() != "class_body"
+                    || class.kind() != "class_declaration"
+                    || !class.parent().is_some_and(|p| p.kind() == "program"
+                        || (p.kind() == "export_statement" && p.parent().is_some_and(|p| p.kind() == "program")))
+                {
+                    return None;
+                }
+                return Some(TsReceiver {
+                    caller_class: text(class.child_by_field_name("name")?, src).to_owned(),
+                    field: text(field, src).to_owned(),
+                });
+            }
+            "function_declaration" | "generator_function_declaration" | "function_expression"
+            | "generator_function" | "class_declaration" | "class" => return None,
+            _ => ancestor = node.parent(),
+        }
+    }
+    None
+}
+
+fn unique<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
+    let first = items.next()?;
+    items.next().is_none().then_some(first)
+}
+
+fn resolve_ts_field_call(
+    file: &FileFacts,
+    call: &CallRef,
+    receiver: &TsReceiver,
+    all: &[FileFacts],
+    known_paths: &[&str],
+    aliases: &TsAliases,
+) -> Option<(String, String)> {
+    let caller = unique(file.ts_classes.iter().filter(|c| c.name == receiver.caller_class))?;
+    let method = |f: &FileFacts, c: &TsClass, name: &str| {
+        let (_, instance) = unique(c.methods.iter().filter(|(method, _)| method == name))?;
+        if !*instance || c.fields.iter().any(|(field, _)| field == name) {
+            return None;
+        }
+        unique(f.functions.iter().filter(|decl| {
+            decl.name == name && decl.parent.as_deref() == Some(c.name.as_str())
+        }))?;
+        Some(format!("{}::{}::{name}", f.path, c.name))
+    };
+    let (_, ty) = unique(caller.fields.iter().filter(|(field, _)| *field == receiver.field))?;
+    let ty = ty.as_deref()?;
+    let from = method(file, caller, &call.caller_fn)?;
+
+    let mut imports = file.ts_named_imports.iter().filter(|import| import.local == ty);
+    let local = file.ts_classes.iter().filter(|class| class.name == ty);
+    let (target, class) = if let Some(import) = imports.next() {
+        if imports.next().is_some() || local.count() != 0 {
+            return None;
+        }
+        let path = resolve_ts_module(&import.module, &file.path, aliases, known_paths)?;
+        let target = all.iter().find(|f| f.path == path && f.language == "typescript")?;
+        let class = unique(target.ts_classes.iter().filter(|class| class.name == import.exported))?;
+        if !class.exported {
+            return None;
+        }
+        (target, class)
+    } else {
+        (file, unique(local)?)
+    };
+    Some((from, method(target, class, &call.callee_name)?))
 }
 
 /// Extract the inner text of a `string` node (`"./auth"` -> `./auth`), via its
@@ -1584,6 +1759,16 @@ pub fn resolve_with_root(all: &[FileFacts], root: &str) -> Graph {
     // Ambiguous or unknown names produce no edge.
     for f in all {
         for call in &f.calls {
+            if let Some(receiver) = &call.ts_receiver {
+                if let Some((from, to)) = resolve_ts_field_call(f, call, receiver, all, &known_paths, &aliases) {
+                    graph.calls.push((from, to, CallEvidence::Binding, CallSite {
+                        path: f.path.clone(),
+                        start_line: call.start_line,
+                        end_line: call.end_line,
+                    }));
+                }
+                continue;
+            }
             let defines = |file: &str| {
                 fn_index
                     .get(call.callee_name.as_str())

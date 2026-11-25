@@ -13,7 +13,8 @@ metadata:
 Run commands from the indexed project root. If `lattice` is unavailable or `.lattice/` is missing, use normal code navigation. Do not install models or initialize the index unless asked.
 
 - Known symbol: `lattice query --symbol '<name>' --limit 5`
-- Find code by description: `lattice query '<question>' --limit 5`
+- Find code and nearby calls by description: `lattice query --context '<question>' --limit 5`
+- Read one context hit: `lattice query --show '<hit-id>'`. Copy `id` exactly from the context result.
 - Before editing: `lattice query --impact '<repo-relative path>' --limit 10`
 
 Read only the relevant source spans. An empty result does not prove a symbol or caller is absent. Confirm important relationships in source. If a query fails or does not answer the question, use normal code navigation.
