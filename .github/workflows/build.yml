@@ -17,7 +17,16 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+          && '[{"runner":"ubuntu-22.04","platform":"linux-x86_64","target":"x86_64-unknown-linux-gnu"},
+          {"runner":"ubuntu-24.04-arm","platform":"linux-arm64","target":"aarch64-unknown-linux-gnu"},
+          {"runner":"macos-15","platform":"macos-arm64","target":"aarch64-apple-darwin"}]'
+          || '[{"runner":"ubuntu-22.04","platform":"linux-x86_64","target":"x86_64-unknown-linux-gnu"}]') }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
       - name: Check out source
@@ -60,7 +69,13 @@ jobs:
       - name: Build release binary
         env:
           REQUESTED_TAG: ${{ inputs.tag }}
+          RUST_TARGET: ${{ matrix.target }}
         run: |
+          host=$(rustc +stable -vV | sed -n 's/^host: //p')
+          if [ "$host" != "$RUST_TARGET" ]; then
+            echo "::error::Expected native Rust host $RUST_TARGET, got $host"
+            exit 1
+          fi
           if [ "$REQUESTED_TAG" = v0.1.0 ] && [ ! -f Cargo.lock ]; then
             echo "::warning::v0.1.0 predates the tracked lockfile; resolving dependencies for this build."
             cargo +stable generate-lockfile
@@ -68,18 +83,48 @@ jobs:
           cargo +stable build --release --locked --bin lattice
 
       - name: Package and verify binary
+        env:
+          ARCHIVE: lattice-${{ matrix.platform }}.tar.gz
         run: |
           mkdir -p dist
-          tar -czf dist/lattice-linux-x86_64.tar.gz -C target/release lattice
+          tar -czf "dist/$ARCHIVE" -C target/release lattice
           mkdir -p dist/smoke
-          tar -xzf dist/lattice-linux-x86_64.tar.gz -C dist/smoke
+          tar -xzf "dist/$ARCHIVE" -C dist/smoke
           dist/smoke/lattice --version
 
       - name: Upload binary archive
         if: ${{ !env.ACT }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: lattice-linux-x86_64
-          path: dist/lattice-linux-x86_64.tar.gz
+          name: lattice-${{ matrix.platform }}
+          path: dist/lattice-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           compression-level: 0
+
+  publish:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download binary archives
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: lattice-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        if: ${{ !env.ACT }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          archives=(dist/lattice-{linux-x86_64,linux-arm64,macos-arm64}.tar.gz)
+          for archive in "${archives[@]}"; do
+            test -s "$archive"
+          done
+          gh release create --verify-tag --generate-notes -- "$RELEASE_TAG" "${archives[@]}"
